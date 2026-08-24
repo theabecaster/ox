@@ -8,12 +8,15 @@ import { BUILTIN_SUBAGENTS, loadSubagents } from "../src/subagents.js";
 import { compactMessages, shouldCompact } from "../src/compaction.js";
 import type { ChatMessage } from "../src/sse.js";
 
+let sandbox = "";
 let home = "";
 let repo = "";
 
 beforeAll(() => {
-  home = fs.mkdtempSync(path.join(os.tmpdir(), "ox-home-"));
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), "ox-repo-"));
+  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "ox-mem-"));
+  home = path.join(sandbox, "home");
+  const prjRoot = path.join(sandbox, "ws", "prj");
+  repo = path.join(prjRoot, "apps", "web");
   fs.mkdirSync(path.join(home, ".ox"), { recursive: true });
   fs.mkdirSync(path.join(repo, ".ox"), { recursive: true });
   fs.writeFileSync(path.join(home, ".ox", "AGENTS.md"), "# global rules\nbe terse");
@@ -21,8 +24,7 @@ beforeAll(() => {
 
 describe("memory", () => {
   it("loads ancestor chain root-down with user first", async () => {
-    const parent = path.dirname(repo);
-    const grand = path.dirname(parent);
+    const grand = path.dirname(path.dirname(repo));
     fs.writeFileSync(path.join(grand, "OX.md"), "grand rule");
     fs.writeFileSync(path.join(repo, ".ox", "AGENTS.md"), "repo rule");
     try {

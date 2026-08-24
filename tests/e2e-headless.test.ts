@@ -110,7 +110,7 @@ describe("headless e2e over real HTTP", () => {
   it("completes an agentic turn with tool use and returns text", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ox-e2e-run-"));
     const r = await runCli(["-p", "read note.txt and tell me what it says"], tmp);
-    expect(r.code).toBe(0);
+    expect(r.code, `stderr=${r.stderr} stdout=${r.stdout.slice(0,300)}`).toBe(0);
     expect(r.stdout).toContain("hello-from-file");
     expect(seenAuth).toContain("Bearer test-key-e2e");
     expect(seenToolCallShapes.some((s) => s.includes('"type":"function"'))).toBe(true);
@@ -119,7 +119,7 @@ describe("headless e2e over real HTTP", () => {
   it("emits valid stream-json events", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ox-e2e-sj-"));
     const r = await runCli(["-p", "go", "--output-format", "stream-json"], tmp);
-    expect(r.code).toBe(0);
+    expect(r.code, `stderr=${r.stderr} stdout=${r.stdout.slice(0,300)}`).toBe(0);
     const lines = r.stdout.trim().split("\n").map((l) => JSON.parse(l));
     expect(lines[0]).toMatchObject({ type: "system", subtype: "init" });
     expect(lines.at(-1)).toMatchObject({ type: "result", subtype: "success" });
@@ -129,7 +129,7 @@ describe("headless e2e over real HTTP", () => {
   it("json output includes result envelope", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ox-e2e-js-"));
     const r = await runCli(["-p", "again", "--output-format", "json"], tmp);
-    expect(r.code).toBe(0);
+    expect(r.code, `stderr=${r.stderr} stdout=${r.stdout.slice(0,300)}`).toBe(0);
     const parsed = JSON.parse(r.stdout);
     expect(parsed.result).toContain("hello-from-file");
     expect(parsed.usage.total_tokens).toBeGreaterThan(0);
@@ -138,7 +138,7 @@ describe("headless e2e over real HTTP", () => {
   it("permission denial in default mode blocks writes and the model adapts", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ox-e2e-deny-"));
     const r = await runCli(["-p", "try writing a file"], tmp);
-    expect(r.code).toBe(0);
+    expect(r.code, `stderr=${r.stderr} stdout=${r.stdout.slice(0,300)}`).toBe(0);
     expect(r.stdout).toContain("BLOCKED-OK");
     expect(fs.existsSync(path.join(tmp, "out.txt"))).toBe(false);
   }, 60_000);

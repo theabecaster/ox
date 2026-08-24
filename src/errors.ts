@@ -6,6 +6,15 @@ export interface ErrorContext {
 }
 
 export function explainApiError(err: unknown, ctx: ErrorContext): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes("network_error") || msg.includes("transient upstream")) {
+    return [
+      "The model provider hit a transient network error. Ox already retried automatically.",
+      "",
+      "Wait a few seconds and run the command again. If it keeps happening, check",
+      "status.openrouter.ai or set your own OPENROUTER_API_KEY to use a different moment/route.",
+    ].join("\n");
+  }
   if (err instanceof ApiError) {
     if (err.status === 0) {
       return [
@@ -35,11 +44,12 @@ export function explainApiError(err: unknown, ctx: ErrorContext): string {
     }
     if (ctx.usingGateway && (err.status === 404 || err.status === 502 || err.status === 503)) {
       return [
-        "The Ox free gateway is not responding right now — it may be paused or retired.",
+        "The Ox free gateway or its upstream model provider is temporarily unavailable.",
         "",
-        "You can keep working immediately with your own key:",
-        "  export OPENROUTER_API_KEY=sk-or-…   (free at openrouter.ai)",
-        "then rerun ox. You can also point OX_BASE_URL at any OpenRouter-compatible endpoint.",
+        "Ox already retried automatically. Options:",
+        "- Try again in a minute — most outages are brief.",
+        "- Set your own key for a direct route: export OPENROUTER_API_KEY=sk-or-… (free at openrouter.ai),",
+        "  or point OX_BASE_URL at any OpenRouter-compatible endpoint.",
       ].join("\n");
     }
   }

@@ -131,7 +131,8 @@ async function streamChatOnce(
   cb: StreamCallbacks | undefined,
   opts: ApiOptions,
 ): Promise<{ content: string | null; tool_calls: ToolCall[]; usage?: Usage }> {
-  const baseUrl = (opts.baseUrl ?? process.env.OX_BASE_URL ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");  const wireMessages = messages.map((m) => {
+  const baseUrl = (opts.baseUrl ?? process.env.OX_BASE_URL ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
+  const wireMessages = messages.map((m) => {
     if (!m.tool_calls || m.tool_calls.length === 0) return m;
     return {
       role: m.role,
@@ -182,6 +183,7 @@ async function streamChatOnce(
   const toolAcc = new Map<number, ToolCall>();
   let content = "";
   let usage: Usage | undefined;
+  let sawNetworkError = false;
 
   const parse = createSseParser((data) => {
     try {
@@ -192,6 +194,7 @@ async function streamChatOnce(
             reasoning?: string | null;
             tool_calls?: DeltaToolCall[];
           };
+          finish_reason?: string | null;
         }>;
         usage?: Usage;
       };
@@ -200,7 +203,13 @@ async function streamChatOnce(
         cb?.onUsage?.(json.usage);
       }
       const delta = json.choices?.[0]?.delta;
-      if (!delta) return;
+      if (!delta) {
+        const finish = json.choices?.[0]?.finish_reason;
+        if (finish === "network_error") {
+          sawNetworkError = true;
+        }
+        return;
+      }
       if (delta.reasoning) cb?.onThinking?.(delta.reasoning);
       if (delta.content) {
         content += delta.content;
@@ -223,10 +232,15 @@ async function streamChatOnce(
     }
   });
 
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parse(decoder.decode(value, { stream: true }));
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parse(decoder.decode(value, { stream: true }));
+    }
+  } catch (err) {
+    if (opts.signal?.aborted) throw err;
+    throw new ApiError(502, `stream interrupted before completion: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const toolCalls = [...toolAcc.entries()].sort(([a], [b]) => a - b).map(([, v]) => v);
@@ -234,6 +248,12 @@ async function streamChatOnce(
     const tc = toolCalls[i]!;
     if (!tc.id) tc.id = `call_${i}`;
     if (!tc.name) tc.name = "unknown";
+  }
+  if (sawNetworkError) {
+    throw new ApiError(503, "model provider network_error — transient upstream failure");
+  }
+  if (!content && toolCalls.length === 0 && !usage) {
+    throw new ApiError(502, "empty completion stream from endpoint");
   }
   return { content: content.length > 0 ? content : null, tool_calls: toolCalls, usage };
 }

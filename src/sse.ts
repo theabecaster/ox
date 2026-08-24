@@ -69,6 +69,7 @@ export class ApiError extends Error {
 const RETRY_BASE_MS = 800;
 const RETRY_MAX_ATTEMPTS = 6;
 const RETRY_DELAY_CAP_MS = 6_000;
+const STREAM_IDLE_TIMEOUT_MS = 60_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -267,11 +268,18 @@ async function streamChatOnce(
   body.max_tokens = opts.maxTokens ?? Number(process.env.OX_MAX_TOKENS ?? 32_000);
   if (opts.temperature !== undefined) body.temperature = opts.temperature;
 
+  const inner = new AbortController();
+  const onOuterAbort = () => inner.abort();
+  opts.signal?.addEventListener("abort", onOuterAbort, { once: true });
+  const armStall = (): NodeJS.Timeout =>
+    setTimeout(() => inner.abort(), STREAM_IDLE_TIMEOUT_MS);
+  let stallTimer = armStall();
+
   let res: Response;
   try {
     res = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
-      signal: opts.signal,
+      signal: inner.signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${opts.apiKey}`,
@@ -281,11 +289,18 @@ async function streamChatOnce(
       body: JSON.stringify(body),
     });
   } catch (err) {
+    clearTimeout(stallTimer);
+    opts.signal?.removeEventListener("abort", onOuterAbort);
     if (opts.signal?.aborted) throw err;
+    if (inner.signal.aborted) {
+      throw new ApiError(504, `no response within ${STREAM_IDLE_TIMEOUT_MS / 1000}s`);
+    }
     throw new ApiError(0, `network error reaching ${baseUrl}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   if (!res.ok || !res.body) {
+    clearTimeout(stallTimer);
+    opts.signal?.removeEventListener("abort", onOuterAbort);
     let detail = "";
     try {
       detail = (await res.text()).slice(0, 500);

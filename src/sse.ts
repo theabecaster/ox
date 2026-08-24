@@ -136,6 +136,11 @@ export async function streamChat(
       if (flake && attempt >= RETRY_MAX_ATTEMPTS - 1) {
         try {
           return await completeChat(messages, tools, opts, cb);
+        } catch {
+          /* fall through to tool-less degradation */
+        }
+        try {
+          return await completeChat(messages, [], { ...opts }, cb);
         } catch (fallbackErr) {
           if (opts.signal?.aborted) throw fallbackErr;
           throw err;

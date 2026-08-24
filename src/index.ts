@@ -116,6 +116,11 @@ function parseArgs(argv: string[]): { flags: CliFlags; subcommand?: string[] } {
         console.log(VERSION);
         process.exit(0);
         break;
+      case "-h":
+      case "--help":
+        printHelp();
+        process.exit(0);
+        break;
       default:
         if (a.startsWith("-")) {
           console.error(`Unknown flag: ${a}`);
@@ -279,6 +284,37 @@ async function main(): Promise<number> {
 
 function banner(text: string): void {
   console.log(text);
+}
+
+function printHelp(): void {
+  console.log(`ox — the open coding agent
+
+Usage:
+  ox                        start an interactive session
+  ox "prompt"               start with an initial prompt
+  ox -p "prompt"            run headless and print the result
+  cat log | ox -p "explain" pipe stdin into headless mode
+  ox -c                     continue the most recent session here
+  ox -r <id> [prompt]       resume a session by id
+
+Subcommands:
+  doctor                    diagnose installation and settings
+  mcp [list|add|remove]     manage MCP servers
+  auth status               show endpoint/key source as JSON
+  update                    update to the latest version
+
+Flags:
+  --model <id>              model override (default stealth/ox-alpha)
+  --permission-mode <mode>  default | acceptEdits | plan | bypassPermissions
+  --dangerously-skip-permissions   alias of bypassPermissions
+  --allowed-tools <rules>   comma-separated allow rules
+  --disallowed-tools <rules>
+  --add-dir <paths>         grant extra working directories
+  --max-turns <n>           cap agentic turns (headless)
+  --output-format <fmt>     text | json | stream-json (headless)
+  --append-system-prompt <text>
+  --bare                    skip memory/skills/MCP discovery (fast CI runs)
+  -v, --version             print version`);
 }
 
 function shortCwd(cwd: string): string {

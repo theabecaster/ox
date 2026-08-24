@@ -21,8 +21,8 @@ jobs:
         run: bash scripts/check-no-secrets.sh
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm run test
       - run: npm run build
+      - run: npm run test
       - name: Publish to npm
         run: npm publish --access public
         env:

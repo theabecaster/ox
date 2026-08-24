@@ -371,14 +371,29 @@ async function streamChatOnce(
 
   try {
     for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      parse(decoder.decode(value, { stream: true }));
+      const result = await Promise.race([
+        reader.read() as Promise<IteratorResult<Uint8Array>>,
+        new Promise<"stall">((resolve) => {
+          stallTimer = setTimeout(() => resolve("stall"), STREAM_IDLE_TIMEOUT_MS);
+        }),
+      ]);
+      clearTimeout(stallTimer);
+      if (result === "stall") {
+        inner.abort();
+        throw new ApiError(504, `stream stalled for ${STREAM_IDLE_TIMEOUT_MS / 1000}s`);
+      }
+      if (result.done) break;
+      parse(decoder.decode(result.value, { stream: true }));
     }
   } catch (err) {
+    clearTimeout(stallTimer);
+    opts.signal?.removeEventListener("abort", onOuterAbort);
     if (opts.signal?.aborted) throw err;
+    if (err instanceof ApiError && err.status === 504) throw err;
     throw new ApiError(502, `stream interrupted before completion: ${err instanceof Error ? err.message : String(err)}`);
   }
+  clearTimeout(stallTimer);
+  opts.signal?.removeEventListener("abort", onOuterAbort);
 
   const toolCalls = [...toolAcc.entries()].sort(([a], [b]) => a - b).map(([, v]) => v);
   for (let i = 0; i < toolCalls.length; i++) {

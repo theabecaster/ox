@@ -67,7 +67,8 @@ export class ApiError extends Error {
 }
 
 const RETRY_BASE_MS = 800;
-const RETRY_MAX_ATTEMPTS = 4;
+const RETRY_MAX_ATTEMPTS = 6;
+const RETRY_DELAY_CAP_MS = 6_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -109,13 +110,38 @@ export async function streamChat(
   opts: ApiOptions,
 ): Promise<{ content: string | null; tool_calls: ToolCall[]; usage?: Usage }> {
   let attempt = 0;
+  let lastError: unknown;
   for (;;) {
     try {
-      return await streamChatOnce(messages, tools, cb, opts);
+      const result = await streamChatOnce(messages, tools, cb, opts);
+      if (
+        attempt > 0 &&
+        !result.content &&
+        result.tool_calls.length === 0 &&
+        lastError instanceof ApiError
+      ) {
+        /* recovered on retry; nothing extra to do */
+      }
+      return result;
     } catch (err) {
       if (opts.signal?.aborted) throw err;
+      lastError = err;
+      const flake =
+        err instanceof ApiError &&
+        ([502, 503, 529].includes(err.status) ||
+          err.message.includes("network_error") ||
+          err.message.includes("empty completion") ||
+          err.message.includes("stream interrupted"));
+      if (flake && attempt >= RETRY_MAX_ATTEMPTS - 1) {
+        try {
+          return await completeChat(messages, tools, opts, cb);
+        } catch (fallbackErr) {
+          if (opts.signal?.aborted) throw fallbackErr;
+          throw err;
+        }
+      }
       if (err instanceof ApiError && err.retryable && attempt < RETRY_MAX_ATTEMPTS - 1) {
-        const delay = RETRY_BASE_MS * 2 ** attempt + Math.random() * 300;
+        const delay = Math.min(RETRY_BASE_MS * 2 ** attempt, RETRY_DELAY_CAP_MS) + Math.random() * 300;
         await sleep(delay);
         attempt++;
         continue;
@@ -123,6 +149,97 @@ export async function streamChat(
       throw err;
     }
   }
+}
+
+async function completeChat(
+  messages: ChatMessage[],
+  tools: ToolDef[],
+  opts: ApiOptions,
+  cb?: StreamCallbacks,
+): Promise<{ content: string | null; tool_calls: ToolCall[]; usage?: Usage }> {
+  const baseUrl = (opts.baseUrl ?? process.env.OX_BASE_URL ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
+  const wireMessages = messages.map((m) => {
+    if (!m.tool_calls || m.tool_calls.length === 0) return m;
+    return {
+      role: m.role,
+      content: typeof m.content === "string" && m.content.length > 0 ? m.content : null,
+      tool_calls: m.tool_calls.map((t) => ({
+        type: "function",
+        id: t.id,
+        function: { name: t.name, arguments: t.arguments },
+      })),
+    };
+  });
+  const body: Record<string, unknown> = {
+    model: opts.model,
+    messages: wireMessages,
+    stream: false,
+    max_tokens: opts.maxTokens ?? Number(process.env.OX_MAX_TOKENS ?? 32_000),
+  };
+  if (tools.length > 0) body.tools = tools.map((t) => ({ type: "function", function: t }));
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    signal: opts.signal,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${opts.apiKey}`,
+      "HTTP-Referer": "https://github.com/theabecaster/ox",
+      "X-Title": "Ox CLI",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.text()).slice(0, 300);
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, `API error ${res.status}: ${detail || res.statusText}`);
+  }
+  const json = (await res.json()) as {
+    choices?: Array<{
+      message?: {
+        content?: string | null;
+        reasoning?: string | null;
+        tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>;
+      };
+      finish_reason?: string;
+    }>;
+    usage?: Usage;
+  };
+  const msg = json.choices?.[0]?.message;
+  const toolCalls: ToolCall[] = (msg?.tool_calls ?? []).map((tc, i) => ({
+    id: tc.id ?? `call_${i}`,
+    name: tc.function?.name ?? "unknown",
+    arguments: tc.function?.arguments ?? "{}",
+  }));
+  if (!msg?.content && toolCalls.length === 0) {
+    const finish = json.choices?.[0]?.finish_reason;
+    if (finish === "network_error") {
+      throw new ApiError(503, "model provider network_error — transient upstream failure");
+    }
+    if (finish === "length" || (msg?.reasoning ?? "").length > 0) {
+      throw new ApiError(
+        400,
+        "model produced no answer: its entire token budget went to internal reasoning. Raise it with OX_MAX_TOKENS (e.g. 64000) and retry.",
+      );
+    }
+    throw new ApiError(502, "empty completion from endpoint");
+  }
+  if (msg?.reasoning) cb?.onThinking?.(msg.reasoning);
+  if (msg?.content) cb?.onText?.(msg.content);
+  for (const tc of toolCalls) {
+    cb?.onToolCallDelta?.(0, tc.id, tc.name, tc.arguments);
+  }
+  const usage = json.usage;
+  if (usage) cb?.onUsage?.(usage);
+  return {
+    content: msg?.content ?? null,
+    tool_calls: toolCalls,
+    usage,
+  };
 }
 
 async function streamChatOnce(
@@ -252,7 +369,10 @@ async function streamChatOnce(
   if (sawNetworkError) {
     throw new ApiError(503, "model provider network_error — transient upstream failure");
   }
-  if (!content && toolCalls.length === 0 && !usage) {
+  if (!content && toolCalls.length === 0) {
+    if (sawNetworkError) {
+      throw new ApiError(503, "model provider network_error — transient upstream failure");
+    }
     throw new ApiError(502, "empty completion stream from endpoint");
   }
   return { content: content.length > 0 ? content : null, tool_calls: toolCalls, usage };

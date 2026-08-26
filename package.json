@@ -39,7 +39,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "check": "npm run typecheck && npm run lint && npm run build && npm run test",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
